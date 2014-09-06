@@ -1,0 +1,253 @@
+<html>
+<head>
+<style>
+document, body, #viewport {
+  width:100%;
+  height:100%;
+  border:0px;
+  margin:0px;
+}
+</style>
+
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/2.1.1/jquery.min.js"></script>
+<script>
+///// Consider running Chrome like so:
+
+// /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --video-threads=8 --allow-file-access-from-files
+
+///// TODO:
+// Draw video frames in actual spots
+// Translate a bit while animating
+// Increase # of videos
+
+var videos = [];
+var videos_ready = false;
+var video_fps = 10;
+var webgl_fps = 60;
+var gl;
+var shaderProgram;
+
+function init_videos() {
+  var rows = 2;
+  var cols = 3;
+  var n = 0;
+  for (var y = 0; y < rows; y++) {
+    for (var x = 0; x < cols; x++) {
+      var video = $('<video>').attr('src', 'dfw/x' + x + 'y' + y + '.mp4')
+      videos.push({
+        video:video[0],
+        currentTexture:gl.createTexture(),
+        nextTexture:gl.createTexture(),
+        x:x,
+        y:y
+      });
+    }
+  }
+  console.log('Loading ' + videos.length + ' videos');
+}
+
+var webgl_frameno = 0;
+
+function r2(x) {
+  return Math.round(x * 100) / 100;
+}
+
+// WebGL frames 0-5 are starting videos
+// WebGL frames 6-11 are capturing video frame 0
+// WebGL frames 12-17 show video frame 0
+
+function sync_videos() {
+  var stat = [];
+  for (var i = 0; i < videos.length; i++) {
+    var v = videos[i];
+    // Desired time for video 0, at webgl frame 6, is the center of video frame 0 (t = 0.5 / video_fps)
+    var desired_time = (webgl_frameno - i) / webgl_fps - (0.5 / video_fps);
+    var actual_time = v.video.currentTime;
+    if (desired_time >= 0) {
+      if (v.video.paused) {
+        v.video.play();
+      }
+      // Set speed so that in one webgl frame, we'll be exactly at the right time
+      var future_target = (1 / webgl_fps) + desired_time;
+      var speed = (future_target - actual_time) / (1 / webgl_fps);
+      if (speed < 0.01) speed = 0.01;
+      if (speed > 5) speed = 5;
+      v.video.playbackRate = speed;
+      stat.push('d=' + r2(desired_time) + ',a=' + r2(actual_time) + ',s=' + r2(speed));
+    }
+  }
+  return stat.join(' ');      
+}
+
+function capture_video_frame() {
+  var video_idx = webgl_frameno % (webgl_fps / video_fps);
+  var video_frameno = (webgl_frameno - video_idx) / (webgl_fps / video_fps) - 1;
+  if (video_idx < videos.length && video_frameno >= 0) {
+    var v = videos[video_idx];
+    gl.bindTexture(gl.TEXTURE_2D, v.nextTexture);
+    var before = performance.now();
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, v.video);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    var elapsed = performance.now() - before;
+    console.log(
+      'Grabbed frame ' + video_frameno + 
+      ' (actual ' + r2(v.video.currentTime * video_fps) +
+      ') from video ' + video_idx + ' in ' + Math.round(elapsed) + ' ms');
+  }
+}
+
+function swap_video_textures() {
+  console.log('Swapping video textures');
+  for (var i = 0; i < videos.length; i++) {
+    var v = videos[i];
+    var tmp = v.currentTexture;
+    v.currentTexture = v.nextTexture;
+    v.nextTexture = v.currentTexture;
+  }
+}
+
+function draw_webgl_frame() {
+  if (webgl_frameno < 12) { return; }
+
+  gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+  gl.clearColor(0, 0.5, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  if (webgl_frameno % (webgl_fps / video_fps) == 0) {
+    swap_video_textures();
+  }
+
+  for (var i = 0; i < videos.length; i++) {
+    var v = videos[i];
+    gl.bindTexture(gl.TEXTURE_2D, v.currentTexture);
+    gl.uniform2f(shaderProgram.uVideoOffset, v.x - 1 - webgl_frameno * 1e-3, -v.y);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+
+function animate() {
+  if (webgl_frameno < 11 + 29 * 6) window.requestAnimationFrame(animate);
+  if (!videos_ready) {
+    for (var i = 0; i < videos.length; i++) {
+      if (videos[i].video.readyState < 4) return;
+    }
+    videos_ready = true;
+  } else {
+    draw_webgl_frame();
+    capture_video_frame();
+    /*console.log(*/webgl_frameno + ':' + sync_videos()/*)*/;
+    webgl_frameno++;
+  }
+}
+
+function set_webgl_viewport() {
+  var viewport = $('#viewport')[0];
+  viewport.width = $(viewport).width();
+  viewport.height = $(viewport).height();
+  gl = viewport.getContext('webgl');
+  gl.viewportWidth = viewport.width;
+  gl.viewportHeight = viewport.height;
+}
+
+$(window).resize(set_webgl_viewport);
+
+function init_webgl() {
+  set_webgl_viewport();
+  // Create shader program
+  shaderProgram = gl.createProgram();
+  gl.attachShader(shaderProgram, getShader(gl, 'shader-vs'));
+  gl.attachShader(shaderProgram, getShader(gl, 'shader-fs'));
+  gl.linkProgram(shaderProgram);
+  gl.useProgram(shaderProgram);
+
+  shaderProgram.textureCoordAttribute =
+    gl.getAttribLocation(shaderProgram, 'aTextureCoord');
+  gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+  // Create texture coords in triangle-strip order
+  var quadTextureCoordBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadTextureCoordBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0,  1, 0,  0, 1,  1, 1]), 
+                gl.STATIC_DRAW);
+  gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, 
+                         2, gl.FLOAT, false, 0, 0);
+
+  shaderProgram.uVideoOffset = gl.getUniformLocation(shaderProgram, 'uVideoOffset');
+}
+
+function getShader(gl, id) {
+  var shaderScript = document.getElementById(id);
+  if (!shaderScript) {
+    return null;
+  }
+
+  var str = "";
+  var k = shaderScript.firstChild;
+  while (k) {
+    if (k.nodeType == 3) {
+        str += k.textContent;
+    }
+    k = k.nextSibling;
+  }
+
+  var shader;
+  if (shaderScript.type == "x-shader/x-fragment") {
+    shader = gl.createShader(gl.FRAGMENT_SHADER);
+  } else if (shaderScript.type == "x-shader/x-vertex") {
+    shader = gl.createShader(gl.VERTEX_SHADER);
+  } else {
+    return null;
+  }
+
+  gl.shaderSource(shader, str);
+  gl.compileShader(shader);
+
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    alert(gl.getShaderInfoLog(shader));
+    return null;
+  }
+
+  return shader;
+}
+
+function init() {
+  init_webgl();
+  init_videos();
+  window.requestAnimationFrame(animate);
+}
+
+$(init);
+</script>
+
+<script id="shader-fs" type="x-shader/x-fragment">
+precision mediump float;
+varying vec2 vTextureCoord;
+uniform sampler2D uSampler;
+void main(void) {
+  vec4 textureColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+  gl_FragColor = vec4(textureColor.rgb, 1);
+  //gl_FragColor = vec4(0,0,1,1);
+}
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+attribute vec2 aTextureCoord;
+varying vec2 vTextureCoord;
+uniform vec2 uVideoOffset;
+uniform vec2 uVideoScale;
+
+void main(void) {
+  vTextureCoord = vec2(aTextureCoord.x, 1.0 - aTextureCoord.y);
+  gl_Position = vec4(aTextureCoord + uVideoOffset, 0, 1);
+}
+</script>
+
+</head>
+<body>
+<canvas id="viewport"></canvas>
+</body>
+</html>
