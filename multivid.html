@@ -124,7 +124,7 @@ function draw_webgl_frame() {
   for (var i = 0; i < videos.length; i++) {
     var v = videos[i];
     gl.bindTexture(gl.TEXTURE_2D, v.currentTexture);
-    gl.uniform2f(shaderProgram.uVideoOffset, v.x - 1 - webgl_frameno * 1e-3, -v.y);
+    gl.uniform2f(shaderProgram.uVideoOffset, v.x - 1 - webgl_frameno * 2e-3, -v.y);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 }
